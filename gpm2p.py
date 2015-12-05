@@ -41,6 +41,7 @@ def get_spotify_id_basic(title):
 
 
 def get_spotify_id(title):
+    original = title
     id = get_spotify_id_basic(title)
 
     if not id:
@@ -62,7 +63,7 @@ def get_spotify_id(title):
         title = title.replace('*ck', 'uck')
 
     if not id:
-        logging.warn("Could not find an ID for: %s", title)
+        logging.warn("Could not find an ID for: %s / %s", title, original)
 
     logging.info('get_spotify_id( "%s" ) : %s', title, id)
 
