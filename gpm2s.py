@@ -6,10 +6,10 @@ import requests
 import requests_cache
 import argparse
 import HTMLParser
+import json
+from BeautifulSoup import BeautifulSoup
 
 htmlParser = HTMLParser.HTMLParser()
-
-from BeautifulSoup import BeautifulSoup
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -17,9 +17,6 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)8s | %(filename).4s:%(lineno)4d | %(message)s",
     datefmt='%m-%d %H:%M:%S',
 )
-
-
-# regex_remove_par = re.compile(".*?\((.*?)\)")
 
 
 def get_spotify_id_basic(title):
@@ -66,6 +63,7 @@ def get_spotify_id(title):
         logging.warn("Could not find an ID for: %s / %s", title, original)
 
     logging.info('get_spotify_id( "%s" ) : %s', title, id)
+    return id
 
 
 def parse_track(tr):
@@ -77,11 +75,51 @@ def parse_track(tr):
     return get_spotify_id(htmlParser.unescape(track))
 
 
-def parse_playlist(content):
-    # logging.debug("parse_playlist: %s", content)
-    soup = BeautifulSoup(content)
-    spotify_ids = map(parse_track, soup.findAll('tr', {'class': 'tracklist-entry'}))
-    return [id for id in spotify_ids if id != '']
+def gpm_parse_and_convert(content_soup):
+    spotify_ids = map(parse_track, content_soup.findAll('tr', {'class': 'tracklist-entry'}))
+    return [id for id in spotify_ids if id]
+
+
+def gpm_parse_title(content_soup):
+    return content_soup.find('div', {'class': 'title fade-out'}).a.text
+
+
+def spotify_create_playlist(title, track_ids_list, args):
+    data = {
+        "name": title,
+        "public": False
+    }
+    httpResponse = requests.post(
+        'https://api.spotify.com/v1/users/{user}/playlists'.format(user=args.spotify_user),
+        json.dumps(data),
+        headers={
+            'Authorization': 'Bearer ' + args.spotify_oauth
+        }
+    )
+
+    if not httpResponse.ok:
+        raise Exception('Could not create playlist !', httpResponse)
+
+    playlist = json.loads(httpResponse.text)
+
+    chunk_size = 50
+    track_ids_sublists = [track_ids_list[x:(x + chunk_size)] for x in xrange(0, len(track_ids_list), chunk_size)]
+
+    for list in track_ids_sublists:
+        track_uris = ''
+        for track_id in list:
+            if track_uris:
+                track_uris += ','
+            track_uris += 'spotify:track:' + track_id
+        httpResponse = requests.post(
+            playlist['tracks']['href'] + '?uris=' + track_uris,
+            '',
+            headers={
+                'Authorization': 'Bearer ' + args.spotify_oauth
+            }
+        )
+        if not httpResponse.ok:
+            raise Exception('Problem filling playlist', httpResponse)
 
 
 if __name__ == '__main__':
@@ -90,14 +128,24 @@ if __name__ == '__main__':
 
     # We parse args
     parser = argparse.ArgumentParser(description='Google Play Music to Spotify importer')
-    parser.add_argument('--gpm-playlist', '-g', help='Google Play Music URL',
-                        default="https://play.google.com/music/playlist/AMaBXykhNg66Qky9PXUN9KNWNqlkMHaNi8q7DH37XKYenSG0mDL2oHq9nMxXNSVx6EliPv6p6V0gOUrUPiHFvFJG6O4KRNwQMQ==")
+    parser.add_argument('--gpm-playlist', '-g', help='Google Play Music URL', required=True)
     parser.add_argument('--no-http-caching', '-c', help='Disable HTTP caching', action='store_true', default=False)
+    parser.add_argument('--spotify_user', '-su', help='Spotify User', required=True)
+    parser.add_argument('--spotify-oauth', '-so', help='Spotify OAuth token')
     args = parser.parse_args()
 
     if not args.no_http_caching:
-        logging.info("Enabling HTTP caching...")
         requests_cache.install_cache('http_cache')
+    else:
+        logging.warn("HTTP caching disabled")
+
+    if not args.spotify_oauth:
+        with open('.spotify_oauth', 'r') as s_oauth_file:
+            args.spotify_oauth = s_oauth_file.read()
+
+    if not args.spotify_oauth:
+        logging.critical("You have to specify on oauth token by CLI or file")
+        exit(1)
 
     # The GPM playlist URL must be changed a little bit
     gpm_url = args.gpm_playlist.replace('https://play.google.com/music/playlist/',
@@ -106,4 +154,7 @@ if __name__ == '__main__':
     # We fetch the playlist
     gpm_content = requests.get(gpm_url, verify=False).text
 
-    parse_playlist(gpm_content)
+    gpm_soup = BeautifulSoup(gpm_content)
+    title = gpm_parse_title(gpm_soup)
+    track_ids_list = gpm_parse_and_convert(gpm_soup)
+    spotify_create_playlist(title, track_ids_list, args)
